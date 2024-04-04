@@ -1,0 +1,108 @@
+#!/usr/bin/env python3
+# license removed for brevity
+import rospy
+from geometry_msgs.msg import Point
+
+global obj_id, pos_x, pos_y
+
+obj_id = 0
+pos_x = 0
+pos_y = 0
+
+import sys
+import argparse
+
+from jetson_inference import detectNet
+from jetson_utils import videoSource, videoOutput, Log
+
+# parse the command line
+parser = argparse.ArgumentParser(description="Locate objects in a live camera stream using an object detection DNN.", 
+                                 formatter_class=argparse.RawTextHelpFormatter, 
+                                 epilog=detectNet.Usage() + videoSource.Usage() + videoOutput.Usage() + Log.Usage())
+
+parser.add_argument("input", type=str, default="", nargs='?', help="URI of the input stream")
+parser.add_argument("output", type=str, default="", nargs='?', help="URI of the output stream")
+parser.add_argument("--network", type=str, default="ssd-mobilenet-v2", help="pre-trained model to load (see below for options)")
+parser.add_argument("--overlay", type=str, default="box,labels,conf", help="detection overlay flags (e.g. --overlay=box,labels,conf)\nvalid combinations are:  'box', 'labels', 'conf', 'none'")
+parser.add_argument("--threshold", type=float, default=0.5, help="minimum detection threshold to use") 
+
+try:
+	args = parser.parse_known_args()[0]
+except:
+	print("")
+	parser.print_help()
+	sys.exit(0)
+
+# create video sources and outputs
+#input_video = videoSource(args.input, argv=sys.argv)
+input_video = videoSource("/dev/video0")
+output_video = videoOutput(args.output, argv=sys.argv)
+
+#with open('original.txt', 'r') as f:
+#     labels = f.read().split('\n')
+#     labels = [x if x == 'bottle' else 'void' for x in labels]
+#with open('labels.txt', 'w') as f:
+#     f.write('\n'.join(labels))
+
+# load the object detection network
+net = detectNet(args.network, sys.argv, args.threshold)
+
+#net = detectNet(model='ssd-mobilenet-v2', labels="labels.txt")
+
+# note: to hard-code the paths to load a model, the following API can be used:
+#
+# net = detectNet(model="model/ssd-mobilenet.onnx", labels="model/labels.txt", 
+#                 input_blob="input_0", output_cvg="scores", output_bbox="boxes", 
+#                 threshold=args.threshold)
+# remote:  (397.891, 339.785)
+from labels import id_to_label, label_to_id
+
+
+def main_prog():
+    global obj_id, pos_x, pos_y
+
+    pub = rospy.Publisher('object_def', Point, queue_size=10)
+    rospy.init_node('vision_core', anonymous=True)
+    rate = rospy.Rate(4) 
+    while not rospy.is_shutdown():
+
+
+        img = input_video.Capture()
+
+        if img is None: # timeout
+            continue  
+        
+    # detect objects in the image (with overlay)
+        detections = net.Detect(img, overlay=args.overlay)
+
+    # print the detections
+        #print("detected {:d} objects in image".format(len(detections)))    
+        for detection in detections:
+            #print(f'{id_to_label[detection.ClassID + 1]}, {detection.Center}')
+            #print(detection.ClassID)
+            pos_x = detection.Center[0]
+            pos_y = detection.Center[1]
+            obj_id = detection.ClassID            
+    # render the image
+        output_video.Render(img)
+
+    # update the title bar
+        output_video.SetStatus("{:s} | Network {:.0f} FPS".format(args.network, net.GetNetworkFPS()))
+
+
+
+        obj_def = Point()
+
+        obj_def.x = pos_x
+        obj_def.y = pos_y
+        obj_def.z = obj_id
+        
+        #rospy.loginfo(hello_str)
+        pub.publish(obj_def)
+        rate.sleep()
+
+if __name__ == '__main__':
+    try:
+        main_prog()
+    except rospy.ROSInterruptException:
+        pass
